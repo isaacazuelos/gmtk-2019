@@ -1,3 +1,4 @@
+/* eslint-disable no-case-declarations */
 // A game for the GMTK Game Jam 2019
 //
 // https://itch.io/jam/gmtk-2019
@@ -27,29 +28,41 @@ const PLAYER_MAX_MOVEMENT_SPEED = 2;
 const PLAYER_FRICTION = 0.1;
 const PLAYER_RADIUS = 7;
 
+const PLAYER_INTO_SHIP_ALARM_LENGTH = 3.12;
+const PLAYER_TRANSFORM_LENGTH = 1;
+const PLAYER_COOLDOWN = 10;
+
 const ENEMY_ANIMATION_SPEED = 0.1;
 const ENEMY_RADIUS = [0, 6, 7, 8];
 const ENEMY_BASE_SPEED = [0, 1, 2, 3];
 
+const BULLET_SPEED = [0, 1, 2, 3];
+
 // # Utility functions
 
 const clamp = (smallest, number, largest) => Math.min(largest, Math.max(smallest, number));
+
 const radToDeg = r => r / (2 * Math.PI) * 360;
+const degToRad = d => (d / 360) * (2 * Math.PI);
+
 const distance = (x1, y1, x2, y2) => {
   const x = (x1 - x2) * (x1 - x2);
   const y = (y1 - y2) * (y1 - y2);
   return Math.sqrt(x + y);
 };
+
 const angleTo = (x1, y1, x2, y2) => Math.atan2(x1 - x2, y2 - y1); // in rad
+
 const collide = (a, b) => {
   const d = distance(a.x, a.y, b.x, b.y);
   return d <= (a.collisionRadius + b.collisionRadius);
 };
+
 const componenets = (theta) => {
   const dy = Math.cos(-theta);
   const dx = -Math.sin(theta);
   return [dx, dy];
-}
+};
 
 // # Setup Functions
 
@@ -64,7 +77,7 @@ const createApp = () => {
   });
 
   newApp.renderer.backgroundColor = color.red;
-  PIXI.settings.SCALE_mode = PIXI.SCALE_MODES.NEAREST;
+  PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
 
   newApp.stop();
   return newApp;
@@ -108,6 +121,21 @@ const loadTextureArray = (dir, frameCount) => {
   return textureArray;
 };
 
+class Bullet extends PIXI.AnimatedSprite {
+  constructor(element, level) {
+    super(loadTextureArray(`resources/bullet/${element}-${level}`, 1));
+    this.level = level;
+    this.element = element;
+    this.anchor.set(0.5);
+  }
+
+  tick(delta) {
+    const [dx, dy] = componenets(degToRad(this.angle) + Math.PI);
+    this.x += dx * delta * BULLET_SPEED[this.level];
+    this.y += dy * delta * BULLET_SPEED[this.level];
+  }
+}
+
 class Enemy extends PIXI.AnimatedSprite {
   constructor(element, level, x, y) {
     const textureArray = loadTextureArray(`resources/enemy/${element}-${level}`, 2);
@@ -132,6 +160,17 @@ class Enemy extends PIXI.AnimatedSprite {
     this.move(delta, state.player);
     this.collisionCheck(state.bullets);
     this.face(state.player.x, state.player.y);
+    this.cleanBullets()
+  }
+
+  cleanBullets() {
+    const inArena = [];
+    this.bullets.forEach((b) => {
+      if (this.arena.contains(b.x, b.y)) {
+        inArena.push(b);
+      }
+    });
+    this.bullets = inArena;
   }
 
   move(delta, player) {
@@ -164,17 +203,40 @@ class Enemy extends PIXI.AnimatedSprite {
   }
 }
 
+const Element = {
+  green: 'green',
+  red: 'red',
+  blue: 'blue',
+};
+
+const Mode = {
+  turret: 'turret',
+  ship: 'ship',
+  intoTurret: 'intoTurret',
+  intoShip: 'intoShip',
+};
+
 class Player extends PIXI.AnimatedSprite {
   constructor() {
     const enginesOff = [Texture.from('resources/player/ship/stopped.png')];
-
     super(enginesOff);
 
+    this.mode = Mode.ship;
     this.collisionRadius = PLAYER_RADIUS;
+
+    this.lastBulletFired = -PLAYER_COOLDOWN;
+
+    this.element = Element.green;
+    this.level = null;
 
     this.textureArrays = {
       enginesOff,
       enginesOn: loadTextureArray('resources/player/ship', 1),
+      turrets: {
+        green: [Texture.from('resources/player/turret/green.png')],
+      },
+      intoTurret: loadTextureArray('resources/player/transform', 7),
+      intoShip: loadTextureArray('resources/player/transform', 7).reverse(),
     };
 
     this.anchor.set(0.5);
@@ -190,16 +252,87 @@ class Player extends PIXI.AnimatedSprite {
     this.down_thrust = false;
   }
 
+  onPointerDown(event) {
+    this.onPointerMove(event);
+  }
+
+  onPointerMove(event) {
+    if (this.mode === Mode.turret) {
+      const localPosition = event.data.getLocalPosition(this.parent);
+      this.face(localPosition.x, localPosition.y);
+      this.shouldShoot = true;
+    }
+  }
+
+  face(x, y) {
+    const angle = radToDeg(angleTo(x, y, this.x, this.y));
+    this.angle = angle;
+  }
+
+
   tick(delta, state) {
-    this.move(delta);
-    this.rotate();
-    this.updateEngineState();
+    if (this.mode === Mode.ship) {
+      this.move(delta);
+      this.rotate();
+      this.updateEngineState();
+    }
+
+    console.log(this.lastBulletFired + PLAYER_COOLDOWN, state.time);
+    if (this.shouldShoot && (this.lastBulletFired + PLAYER_COOLDOWN < state.time)) {
+      this.lastBulletFired = state.time;
+      this.shouldShoot = false;
+      state.addBullet(this.x, this.y, this.angle, this.element, this.level);
+    }
+
     this.collisionCheck(state.enemies);
   }
 
+  // cheat code!
+  toggleMode() {
+    if (this.mode === Mode.ship) {
+      this.intoTurret(Element.green, 1);
+    } else if (this.mode === Mode.turret) {
+      this.intoShip();
+    } else {
+      // do nothing, wait for transformation to finish.
+    }
+  }
+
+  intoTurret(element, level) {
+    this.mode = Mode.intoTurret;
+    this.textures = this.textureArrays.intoTurret;
+    this.loop = false;
+    this.gotoAndPlay(0);
+    this.onComplete = () => {
+      // Not quite zero, so we can keep the same old angle.
+      this.dx *= 0.00001;
+      this.dy *= 0.00001;
+
+      this.mode = Mode.turret;
+      this.loop = true;
+
+      this.element = element;
+      this.level = level;
+      this.textures = this.textureArrays.turrets[element];
+    };
+  }
+
+  intoShip() {
+    this.textures = this.textureArrays.intoShip;
+    this.loop = false;
+    this.gotoAndPlay(0);
+    this.onComplete = () => {
+      this.mode = Mode.ship;
+    };
+  }
+
   rotate() {
-    const angleRad = Math.atan2(this.dy, this.dx);
-    this.angle = radToDeg(angleRad + (Math.PI / 2));
+    if (this.mode === Mode.ship) {
+      // face the direction of movement
+      const angle = Math.atan2(this.dy, this.dx);
+      this.angle = radToDeg(angle + (Math.PI / 2));
+    }
+    // faceing the pointer happens on events.
   }
 
   move(delta) {
@@ -239,7 +372,7 @@ class Player extends PIXI.AnimatedSprite {
   collisionCheck(enemies) {
     enemies.forEach((enemy) => {
       if (collide(this, enemy)) {
-        console.log('kerblam!');
+        this.intoTurret(enemy);
       }
     });
   }
@@ -247,9 +380,9 @@ class Player extends PIXI.AnimatedSprite {
 
 // Largely from <https://github.com/kittykatattack/learningPixi#keyboard>
 // Using `value` from <https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values>
-const keyboard = (value) => {
+const keyboard = (values) => {
   const key = {};
-  key.value = value;
+  key.values = values;
   key.isDown = false;
   key.isUp = true;
   key.press = undefined;
@@ -257,7 +390,7 @@ const keyboard = (value) => {
 
   // The `downHandler`
   key.downHandler = (event) => {
-    if (event.key === key.value) {
+    if (key.values.includes(event.key)) {
       if (key.isUp && key.press) key.press();
       key.isDown = true;
       key.isUp = false;
@@ -267,7 +400,7 @@ const keyboard = (value) => {
 
   // The `upHandler`
   key.upHandler = (event) => {
-    if (event.key === key.value) {
+    if (key.values.includes(event.key)) {
       if (key.isDown && key.release) key.release();
       key.isDown = false;
       key.isUp = true;
@@ -301,36 +434,46 @@ class State {
   constructor() {
     this.time = 0;
 
-    this.player = new Player();
+    const arena = new PIXI.AnimatedSprite(loadTextureArray('resources/arena', 1));
+    arena.interactive = true;
+    this.arena = arena;
+    app.stage.addChild(this.arena);
 
-    const enemy = new Enemy('green', 1, 25, 25);
-    app.stage.addChild(enemy);
+    const player = new Player();
+    this.player = player;
+    arena.addChild(this.player);
 
-    this.enemies = [enemy];
+    this.enemies = [];
     this.bullets = [];
 
-    app.stage.addChild(this.player);
-
     // left arrow key
-    const left = keyboard('ArrowLeft');
+    const left = keyboard(['ArrowLeft', 'a']);
     left.press = this.onLeftPress.bind(this);
     left.release = this.onLeftRelease.bind(this);
     this.left = left;
 
-    const right = keyboard('ArrowRight');
+    const right = keyboard(['ArrowRight', 'd']);
     right.press = this.onRightPress.bind(this);
     right.release = this.onRightRelease.bind(this);
     this.right = right;
 
-    const up = keyboard('ArrowUp');
+    const up = keyboard(['ArrowUp', 'w']);
     up.press = this.onUpPress.bind(this);
     up.release = this.onUpRelease.bind(this);
     this.up = up;
 
-    const down = keyboard('ArrowDown');
+    const down = keyboard(['ArrowDown', 's']);
     down.press = this.onDownPress.bind(this);
     down.release = this.onDownRelease.bind(this);
     this.down = down;
+
+    // temp for testing
+    const space = keyboard(' ');
+    space.press = player.toggleMode.bind(player);
+
+    // bind player to pointer events
+    arena.on('pointerdown', player.onPointerDown.bind(player));
+    arena.on('pointermove', player.onPointerMove.bind(player))
   }
 
   // this could have been done better...
@@ -370,7 +513,17 @@ class State {
   tick(delta) {
     this.time += delta;
     this.player.tick(delta, this);
+    this.bullets.forEach(b => b.tick(delta));
     this.enemies.forEach(e => e.tick(delta, this));
+  }
+
+  addBullet(x, y, angle, element, level) {
+    const bullet = new Bullet(element, level);
+    bullet.x = x;
+    bullet.y = y;
+    bullet.angle = angle;
+    this.arena.addChild(bullet);
+    this.bullets.push(bullet);
   }
 }
 
