@@ -26,15 +26,15 @@ const PLAYER_THRUST = 1;
 const PLAYER_MAX_MOVEMENT_SPEED = 2;
 const PLAYER_FRICTION = 0.1;
 const PLAYER_RADIUS = 7;
-const PLAYER_SHOCKWAVE_RADIUS = 16;
+const PLAYER_SHOCKWAVE_RADIUS = 32;
 const PLAYER_TURRET_TIME = 200;
 const PLAYER_COOLDOWN = 10;
-// const PLAYER_INTO_SHIP_ALARM_LENGTH = 3.12;
-// const PLAYER_TRANSFORM_LENGTH = 1;
+const PLAYER_INTO_SHIP_WARNING_DURATION = 3 * 100;
 
 const ENEMY_ANIMATION_SPEED = 0.1;
 const ENEMY_RADIUS = [0, 6, 7, 8];
 const ENEMY_BASE_SPEED = [0, 0.75, 0.5, 0.3];
+const ENEMY_COURAGE_BOOST = 2;
 const ENEMY_BLINKS = 4; // must be even
 const ENEMY_BLINK_DURATION = 5;
 
@@ -121,17 +121,20 @@ const Sound = {
   blue_1: PIXI.sound.Sound.from('resources/sounds/blue-1.mp3'),
   blue_2: PIXI.sound.Sound.from('resources/sounds/blue-2.mp3'),
   blue_3: PIXI.sound.Sound.from('resources/sounds/blue-3.mp3'),
+  blueDeath: PIXI.sound.Sound.from('resources/sounds/blueDeath.mp3'),
+  dead_1: PIXI.sound.Sound.from('resources/sounds/dead-1.mp3'),
+  dead_2: PIXI.sound.Sound.from('resources/sounds/dead-2.mp3'),
+  dead_3: PIXI.sound.Sound.from('resources/sounds/dead-3.mp3'),
+  deadPlayer: PIXI.sound.Sound.from('resources/sounds/deadPlayer.mp3'),
   green_1: PIXI.sound.Sound.from('resources/sounds/green-1.mp3'),
   green_2: PIXI.sound.Sound.from('resources/sounds/green-2.mp3'),
   green_3: PIXI.sound.Sound.from('resources/sounds/green-3.mp3'),
+  intoShip: PIXI.sound.Sound.from('resources/sounds/intoShip.mp3'),
+  intoTurret: PIXI.sound.Sound.from('resources/sounds/intoTurret.mp3'),
   red_1: PIXI.sound.Sound.from('resources/sounds/red-1.mp3'),
   red_2: PIXI.sound.Sound.from('resources/sounds/red-2.mp3'),
   red_3: PIXI.sound.Sound.from('resources/sounds/red-3.mp3'),
-  dead_1_1: PIXI.sound.Sound.from('resources/sounds/dead-1-1.mp3'),
-  dead_1_2: PIXI.sound.Sound.from('resources/sounds/dead-1-2.mp3'),
-  dead_1_3: PIXI.sound.Sound.from('resources/sounds/dead-1-3.mp3'),
-  intoShip: PIXI.sound.Sound.from('resources/sounds/intoShip.mp3'),
-  intoTurret: PIXI.sound.Sound.from('resources/sounds/intoTurret.mp3'),
+  warning: PIXI.sound.Sound.from('resources/sounds/warning.mp3'),
 };
 
 const load = (onCompletion) => {
@@ -186,7 +189,7 @@ class Bullet extends PIXI.AnimatedSprite {
       return;
     }
     this.isAlive = false;
-    this.alpha = 0;
+    this.visible = false;
   }
 }
 
@@ -233,16 +236,36 @@ class Enemy extends PIXI.AnimatedSprite {
   }
 
   move(delta, player) {
-    switch (this.level) {
-      default:
-        this.moveToward(delta, player);
-        break;
+    if (this.element === Element.blue) {
+      this.moveEvasively(delta, player);
+    } else {
+      this.moveToward(delta, player);
     }
+    this.x = clamp(8, this.x, FRAME_WIDTH - 8);
+    this.y = clamp(8, this.y, FRAME_HEIGHT - 8);
+  }
+
+  moveEvasively(delta, player) {
+    const toPlayer = angleTo(this.x, this.y, player.x, player.y);
+    const [dx, dy] = componenets(toPlayer);
+
+    const playerHeading = degToRad(player.angle);
+
+    const theta = playerHeading - toPlayer;
+
+    let fearFactor = -Math.cos(theta);
+    if (fearFactor >= 0) {
+      fearFactor *= ENEMY_COURAGE_BOOST;
+    }
+
+
+    this.x += dx * delta * ENEMY_BASE_SPEED[this.level] * fearFactor;
+    this.y += dy * delta * ENEMY_BASE_SPEED[this.level] * fearFactor;
   }
 
   moveToward(delta, player) {
-    const direction = angleTo(this.x, this.y, player.x, player.y);
-    const [dx, dy] = componenets(direction);
+    const toPlayer = angleTo(this.x, this.y, player.x, player.y);
+    const [dx, dy] = componenets(toPlayer);
 
     this.x += dx * delta * ENEMY_BASE_SPEED[this.level];
     this.y += dy * delta * ENEMY_BASE_SPEED[this.level];
@@ -263,7 +286,7 @@ class Enemy extends PIXI.AnimatedSprite {
       bullets.forEach((bullet) => {
         if (collide(this, bullet)) {
           this.takeDamage();
-          bullet.die();
+          bullet.die(bullet.element);
         }
       });
     }
@@ -283,7 +306,7 @@ class Enemy extends PIXI.AnimatedSprite {
       return;
     }
 
-    this.alpha = this.blinks % 2 ? 1 : 0;
+    this.visible = Boolean(this.blinks % 2);
 
     if (this.blinkTimer <= 0) {
       this.blinks -= 1;
@@ -293,15 +316,24 @@ class Enemy extends PIXI.AnimatedSprite {
     }
   }
 
-  die() {
+  die(element) {
     this.hp = 0;
     this.textures = this.textureArrays.dead;
     this.gotoAndPlay(0);
     this.loop = false;
-    this.alpha = 1;
+
+    // stay visible, damn it!
+    this.visible = 1;
     this.blinks = 0;
+    this.blinkTimer = 0;
+
     this.angle = Math.random() * 360;
-    Sound[`dead_1_${randInt(3) + 1}`].play();
+
+    if (element === Element.blue) {
+      Sound.blueDeath.play();
+    } else {
+      Sound[`dead_${randInt(3) + 1}`].play();
+    }
   }
 }
 
@@ -315,6 +347,8 @@ class Player extends PIXI.AnimatedSprite {
     this.isAlive = true;
     this.mode = Mode.ship;
     this.collisionRadius = PLAYER_RADIUS;
+
+    this.warningPlayed = false;
 
     this.animationSpeed = PLAYER_ANIMATION_SPEED;
     this.lastBulletFired = -PLAYER_COOLDOWN;
@@ -375,6 +409,11 @@ class Player extends PIXI.AnimatedSprite {
     }
 
     this.turretTime -= delta;
+    if (this.turretTime <= PLAYER_INTO_SHIP_WARNING_DURATION && !this.warningPlayed) {
+      Sound.warning.play();
+      this.warningPlayed = true;
+    }
+
     if ((this.mode === Mode.turret) && (this.turretTime < 0) && this.isAlive) {
       this.intoShip();
     }
@@ -406,6 +445,7 @@ class Player extends PIXI.AnimatedSprite {
     this.gotoAndStop(0);
     Sound.intoTurret.play();
     this.textures = this.textureArrays.intoTurret;
+    this.warningPlayed = false;
     this.loop = false;
     this.gotoAndPlay(0);
     this.onComplete = () => {
@@ -497,6 +537,7 @@ class Player extends PIXI.AnimatedSprite {
 
   die() {
     this.isAlive = false;
+    Sound.deadPlayer.play();
     this.textures = this.textureArrays.dead;
     this.loop = false;
     this.mode = Mode.dying;
@@ -647,6 +688,7 @@ class Spawner {
 class State {
   constructor() {
     this.time = 0;
+    this.paused = false;
 
     const arena = new PIXI.AnimatedSprite(loadTextureArray('resources/arena', 1));
     arena.interactive = true;
@@ -683,9 +725,17 @@ class State {
     down.release = this.onDownRelease.bind(this);
     this.down = down;
 
-    // temp for testing
-    // const space = keyboard(' ');
-    // space.press = player.toggleMode.bind(player);
+    // reset the game state
+    const r = keyboard('r');
+    r.press = () => {
+      app.state = new State();
+      app.ticker.add(app.state.tick.bind(app.state));
+    };
+
+    const p = keyboard('p');
+    p.press = () => {
+      this.paused = !this.paused;
+    };
 
     // bind player to pointer events
     arena.on('pointerdown', player.onPointerDown.bind(player));
@@ -727,11 +777,19 @@ class State {
   }
 
   tick(delta) {
+    if (this.paused) {
+      return;
+    }
+
     this.time += delta;
     this.player.tick(delta, this);
-    this.bullets.forEach(b => b.tick(delta));
-    this.enemies.forEach(e => e.tick(delta, this));
-    this.spawner.tick(delta, this);
+
+    // is this good?
+    if (this.player.isAlive) {
+      this.bullets.forEach(b => b.tick(delta));
+      this.enemies.forEach(e => e.tick(delta, this));
+      this.spawner.tick(delta, this);
+    }
 
     this.cullDeadSprites();
   }
@@ -741,6 +799,8 @@ class State {
     this.enemies.forEach((e) => {
       if (e.isAlive) {
         stillEnemies.push(e);
+      } else {
+        e.visible = true;
       }
     });
     this.enemies = stillEnemies;
