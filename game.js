@@ -123,7 +123,6 @@ const createApp = () => {
     // Game Boy Advanced screen size in pixels
     width: FRAME_WIDTH,
     height: FRAME_HEIGHT,
-    resolution: 2,
   });
 
   PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
