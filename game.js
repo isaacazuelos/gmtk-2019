@@ -39,12 +39,14 @@ const ENEMY_BASE_SPEED = [0, 0.75, 0.5, 0.3];
 const ENEMY_COURAGE_BOOST = 2;
 const ENEMY_BLINKS = 4; // must be even
 const ENEMY_BLINK_DURATION = 5;
+const ENEMY_WIGGLE_DEGREES = [0, 15, 30, 45];
+const ENEMY_WIGGLE_PERIOD = [0, 3, 5, 8];
 
 const BULLET_SPEED = [0, 1.5, 2, 2.5];
 const BULLET_ANIMATION_SPEED = 0.25;
 const BULLET_BURST_COUNT = 8;
 const BULLET_TRIPLE_SHIFT = 5;
-const BULLET_MAX_BOUNCE = 3;
+const BULLET_MAX_BOUNCE = 2;
 
 const SPAWNER_COOLDOWN = 100;
 const SPAWNER_COOLDOWN_DELTA = 0.90;
@@ -186,7 +188,7 @@ class Bullet extends PIXI.AnimatedSprite {
     // try to bounce
     if ((this.element === Element.red)
       && (this.level === 3)
-      && (this.bounces <= BULLET_MAX_BOUNCE)
+      && (this.bounces < BULLET_MAX_BOUNCE)
     ) {
       if (this.x <= 0 || this.x >= FRAME_WIDTH) {
         this.bounces += 1;
@@ -196,8 +198,8 @@ class Bullet extends PIXI.AnimatedSprite {
         this.angle = reflectH(this.angle);
       }
 
-      this.x = clamp(1, this.x, FRAME_WIDTH - 1);
-      this.y = clamp(1, this.y, FRAME_HEIGHT - 1);
+      this.x = clamp(0, this.x, FRAME_WIDTH);
+      this.y = clamp(0, this.y, FRAME_HEIGHT);
     }
   }
 
@@ -256,21 +258,38 @@ class Enemy extends PIXI.AnimatedSprite {
 
   tick(delta, state) {
     if (this.isAlive) {
-      this.move(delta, state.player);
+      this.move(delta, state);
       this.collisionCheck(state);
       this.face(state.player.x, state.player.y);
       this.blink(delta);
     }
   }
 
-  move(delta, player) {
+  move(delta, state) {
     if (this.element === Element.blue) {
-      this.moveEvasively(delta, player);
-    } else {
-      this.moveToward(delta, player);
+      this.moveEvasively(delta, state.player);
+    } else if (this.element === Element.green) {
+      this.moveToward(delta, state.player);
+    } else { // red
+      this.wiggleTowards(delta, state);
     }
+
     this.x = clamp(8, this.x, FRAME_WIDTH - 8);
     this.y = clamp(8, this.y, FRAME_HEIGHT - 8);
+  }
+
+  wiggleTowards(delta, { player, time }) {
+    const toPlayer = angleTo(this.x, this.y, player.x, player.y);
+    const wiggleIntensity = degToRad(ENEMY_WIGGLE_DEGREES[this.level]);
+    const wiggleAngle = Math.sin(time / ENEMY_WIGGLE_PERIOD[this.level]);
+    const wiggle = wiggleIntensity * wiggleAngle;
+
+    console.log(wiggle);
+
+    const [dx, dy] = componenets(toPlayer + wiggle);
+
+    this.x += dx * delta * ENEMY_BASE_SPEED[this.level];
+    this.y += dy * delta * ENEMY_BASE_SPEED[this.level];
   }
 
   moveEvasively(delta, player) {
