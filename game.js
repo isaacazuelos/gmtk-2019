@@ -1,3 +1,4 @@
+/* eslint-disable no-param-reassign */
 // A game for the GMTK Game Jam 2019
 //
 // https://itch.io/jam/gmtk-2019
@@ -15,8 +16,8 @@ const {
 } = PIXI; // eslint-disable-line no-undef
 
 // 16:9 ish version of NES vertical resolution
-const FRAME_WIDTH = 427;
-const FRAME_HEIGHT = 240;
+const FRAME_WIDTH = 600;
+const FRAME_HEIGHT = 300;
 
 const PLAYER_ANIMATION_SPEED = 0.5;
 const PLAYER_DEATH_ANIMATION_SPEED = 0.1;
@@ -24,7 +25,7 @@ const PLAYER_THRUST = 1;
 const PLAYER_MAX_MOVEMENT_SPEED = 2;
 const PLAYER_FRICTION = 0.1;
 const PLAYER_RADIUS = 7;
-const PLAYER_SHOCKWAVE_RADIUS = 32;
+const PLAYER_SHOCKWAVE_RADIUS = 20;
 const PLAYER_TURRET_TIME = 200;
 const PLAYER_INTO_SHIP_WARNING_DURATION = 3 * 100;
 const PLAYER_COOLDOWN = {
@@ -32,6 +33,8 @@ const PLAYER_COOLDOWN = {
   red: [0, 24, 16, 10],
   blue: [0, 16, 12, 12],
 };
+
+const SHOCKWAVE_ANIMATION_SPEED = 0.5;
 
 const ENEMY_ANIMATION_SPEED = 0.1;
 const ENEMY_RADIUS = [0, 6, 7, 8];
@@ -53,10 +56,13 @@ const SPAWNER_COOLDOWN_DELTA = 0.90;
 const SPAWNER_COOLDOWN_MIN = 20;
 const SPAWNER_SAFE_DISTANCE = 64;
 const SPAWNER_MAX_ATTEMPTS = 32;
-const SPAWNER_COUNT_RATE = 20000;
+const SPAWNER_COUNT_RATE = 2000;
+const SPAWNER_NEW_ENEMY_GATE = 550;
+const SPAWNER_NEW_LEVEL_GATE = 300;
 
 const zIndex = {
   player: 100,
+  shockwave: 50,
   enemy: 10,
   bullet: 5,
   corpse: 0,
@@ -144,6 +150,8 @@ const Sound = {
   red_2: PIXI.sound.Sound.from('resources/sounds/red-2.mp3'),
   red_3: PIXI.sound.Sound.from('resources/sounds/red-3.mp3'),
   warning: PIXI.sound.Sound.from('resources/sounds/warning.mp3'),
+  intro: PIXI.sound.Sound.from('resources/music/intro.mp3'),
+  loop: PIXI.sound.Sound.from('resources/music/loop.mp3'),
 };
 
 const load = (onCompletion) => {
@@ -284,8 +292,6 @@ class Enemy extends PIXI.AnimatedSprite {
     const wiggleAngle = Math.sin(time / ENEMY_WIGGLE_PERIOD[this.level]);
     const wiggle = wiggleIntensity * wiggleAngle;
 
-    console.log(wiggle);
-
     const [dx, dy] = componenets(toPlayer + wiggle);
 
     this.x += dx * delta * ENEMY_BASE_SPEED[this.level];
@@ -340,6 +346,7 @@ class Enemy extends PIXI.AnimatedSprite {
 
   takeDamage(bullet, state) {
     this.hp -= 1;
+    state.points += 1;
     if (!this.isAlive) {
       this.die(bullet.element);
       const shouldExplode = (bullet.element === Element.blue) && (bullet.level === 3);
@@ -394,11 +401,13 @@ class Player extends PIXI.AnimatedSprite {
 
     this.zIndex = 100;
 
+    this.tapLocation = null;
+
     this.isAlive = true;
     this.mode = Mode.ship;
     this.collisionRadius = PLAYER_RADIUS;
 
-    this.warningPlayed = false;
+    this.warningPlayed = true;
 
     this.element = Element.green;
     this.level = 1;
@@ -475,7 +484,7 @@ class Player extends PIXI.AnimatedSprite {
       this.shoot(state);
     }
 
-    this.collisionCheck(state.enemies, state.time);
+    this.collisionCheck(state);
   }
 
   shoot(state) {
@@ -583,14 +592,12 @@ class Player extends PIXI.AnimatedSprite {
     }
   }
 
-  collisionCheck(enemies) {
-    enemies.forEach((enemy) => {
+  collisionCheck(state) {
+    state.enemies.forEach((enemy) => {
       if (collide(this, enemy) && enemy.isAlive) {
-        // This kind of invalidates our iteration...
-        this.shockwave(enemies);
-
         if (this.mode === Mode.ship) {
           this.intoTurret(enemy.element, enemy.level);
+          state.addShockwave(enemy.element);
           enemy.die();
         } else if (this.mode === Mode.turret) {
           this.die();
@@ -611,14 +618,6 @@ class Player extends PIXI.AnimatedSprite {
     };
     this.gotoAndPlay(0);
     console.log('YOU DIED!');
-  }
-
-  shockwave(enemies) {
-    enemies.forEach((e) => {
-      if (distance(e.x, e.y, this.x, this.y) <= PLAYER_SHOCKWAVE_RADIUS) {
-        e.die();
-      }
-    });
   }
 }
 
@@ -694,16 +693,16 @@ class Spawner {
     }
   }
 
-  static pickElement() {
-    switch (randInt(3)) {
+  static pickElement(time) {
+    switch (randInt(Math.min(Math.floor(time / SPAWNER_NEW_ENEMY_GATE), 3))) {
       case 1: return Element.red;
       case 2: return Element.blue;
       default: return Element.green;
     }
   }
 
-  static pickLevel() {
-    return randInt(3) + 1;
+  static pickLevel(time) {
+    return randInt(Math.min(Math.floor(time / SPAWNER_NEW_LEVEL_GATE), 3)) + 1;
   }
 
   static safeSpace(state) {
@@ -751,16 +750,39 @@ class Spawner {
   }
 }
 
+// Note these are zero-indexed, unlike the frame texture files.
+const Cards = {
+  title: 0,
+  paused: 1,
+  gameOver: 2,
+};
+
 class State {
   constructor() {
     this.time = 0;
-    this.paused = false;
+    this.paused = true;
+    this.points = 0;
 
     const arena = new PIXI.AnimatedSprite(loadTextureArray('resources/arena', 1));
     arena.interactive = true;
     arena.sortableChildren = true;
     this.arena = arena;
     app.stage.addChild(this.arena);
+
+    const pointsLabel = new PIXI.Text(`points: ${this.points}`, {
+      fontSize: 10,
+      fontFamily: 'Courier',
+    });
+    this.pointsLabel = pointsLabel;
+    app.stage.addChild(this.pointsLabel);
+
+    const cards = new PIXI.AnimatedSprite(loadTextureArray('resources/cards', 2));
+    cards.gotoAndStop(Cards.title);
+    cards.anchor.set(0.5);
+    cards.x = FRAME_WIDTH / 2;
+    cards.y = FRAME_HEIGHT / 2;
+    this.cards = cards;
+    arena.addChild(cards);
 
     const player = new Player();
     this.player = player;
@@ -793,22 +815,76 @@ class State {
 
     // reset the game state
     const r = keyboard('r');
-    r.press = () => {
-      app.state = new State();
-      app.ticker.add(app.state.tick.bind(app.state));
-    };
+    r.press = this.reset.bind(this);
 
     const p = keyboard('p');
-    p.press = () => {
-      this.paused = !this.paused;
-    };
+    p.press = this.togglePause.bind(this);
 
     // bind player to pointer events
-    arena.on('pointerdown', player.onPointerDown.bind(player));
-    arena.on('pointermove', player.onPointerMove.bind(player));
+    arena.on('pointerdown', this.onPointerDown.bind(this));
+    arena.on('pointermove', this.onPointerMove.bind(this));
+
+    // start music
+    Sound.intro.play(() => {
+      Sound.loop.loop = true;
+      Sound.loop.play();
+    });
+  }
+
+  togglePause() {
+    if (this.paused) {
+      this.cards.gotoAndStop(1);
+      this.cards.visible = false;
+      this.paused = false;
+    } else {
+      this.cards.gotoAndStop(1);
+      this.cards.visible = true;
+      this.paused = true;
+    }
+  }
+
+  reset() {
+    // No way this isn't leaking, yolo
+    this.time = 0;
+    this.points = 0;
+    this.bullets = [];
+    this.enemies = [];
+    this.player = new Player();
+    this.spawner = new Spawner();
+
+    while (this.arena.children[0]) {
+      this.arena.removeChild(this.arena.children[0]);
+    }
+
+    this.arena.addChild(this.player);
+    this.arena.addChild(this.cards);
+
+    this.cards.visible = true;
+
+    if (!this.paused) {
+      this.togglePause();
+    }
+
+    this.cards.gotoAndStop(Cards.title);
   }
 
   // this could have been done better...
+
+  onPointerDown(e) {
+    if (this.cards.visible) {
+      this.cards.visible = false;
+    }
+
+    if (this.paused) {
+      this.paused = false;
+    }
+
+    this.player.onPointerDown(e);
+  }
+
+  onPointerMove(e) {
+    this.player.onPointerMove(e);
+  }
 
   onLeftPress() {
     this.player.left_thrust = true;
@@ -847,8 +923,16 @@ class State {
       return;
     }
 
+    if (!this.player.isAlive && !this.paused) {
+      this.paused = true;
+      this.cards.gotoAndStop(Cards.gameOver);
+      this.cards.visible = true;
+    }
+
     this.time += delta;
     this.player.tick(delta, this);
+
+    this.pointsLabel.text = `points: ${this.points}`;
 
     // is this good?
     if (this.player.isAlive) {
@@ -899,6 +983,31 @@ class State {
     this.addBullet(x, y, angle, element, level);
     this.addBullet(x, y, angle + BULLET_TRIPLE_SHIFT, element, level);
     this.addBullet(x, y, angle - BULLET_TRIPLE_SHIFT, element, level);
+  }
+
+  addShockwave(element) {
+    const textures = loadTextureArray(`resources/shockwave/${element}`, 4);
+    const shockwave = new PIXI.AnimatedSprite(textures);
+    shockwave.zIndex = zIndex.shockwave;
+    shockwave.loop = false;
+    shockwave.animationSpeed = SHOCKWAVE_ANIMATION_SPEED;
+    shockwave.anchor.set(0.5);
+    shockwave.x = this.player.x;
+    shockwave.y = this.player.y;
+
+    this.arena.addChild(shockwave);
+    shockwave.gotoAndPlay(0);
+
+    shockwave.onComplete = () => {
+      shockwave.visible = false;
+      this.arena.removeChild(shockwave);
+    };
+
+    this.enemies.forEach((enemy) => {
+      if (distance(enemy.x, enemy.y, this.player.x, this.player.y) <= PLAYER_SHOCKWAVE_RADIUS) {
+        enemy.die();
+      }
+    });
   }
 
   addEnemy(x, y, element, level) {
