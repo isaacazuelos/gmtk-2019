@@ -3,9 +3,7 @@
 // https://itch.io/jam/gmtk-2019
 
 // the code is bad, don't worry about it
-/* eslint-disable no-constant-condition */
 /* eslint-disable no-continue */
-/* eslint-disable class-methods-use-this */
 /* eslint-disable no-undef */
 /* eslint-disable no-case-declarations */
 
@@ -28,8 +26,12 @@ const PLAYER_FRICTION = 0.1;
 const PLAYER_RADIUS = 7;
 const PLAYER_SHOCKWAVE_RADIUS = 32;
 const PLAYER_TURRET_TIME = 200;
-const PLAYER_COOLDOWN = 10;
 const PLAYER_INTO_SHIP_WARNING_DURATION = 3 * 100;
+const PLAYER_COOLDOWN = {
+  green: [0, 16, 10, 10],
+  red: [0, 24, 16, 10],
+  blue: [0, 16, 12, 12],
+};
 
 const ENEMY_ANIMATION_SPEED = 0.1;
 const ENEMY_RADIUS = [0, 6, 7, 8];
@@ -40,6 +42,9 @@ const ENEMY_BLINK_DURATION = 5;
 
 const BULLET_SPEED = [0, 1.5, 2, 2.5];
 const BULLET_ANIMATION_SPEED = 0.25;
+const BULLET_BURST_COUNT = 8;
+const BULLET_TRIPLE_SHIFT = 5;
+const BULLET_MAX_BOUNCE = 3;
 
 const SPAWNER_COOLDOWN = 100;
 const SPAWNER_COOLDOWN_DELTA = 0.90;
@@ -93,11 +98,13 @@ const collide = (a, b) => {
 };
 
 const componenets = (theta) => {
-  const dy = Math.cos(-theta);
   const dx = -Math.sin(theta);
+  const dy = Math.cos(-theta);
   return [dx, dy];
 };
 
+const reflectV = deg => -deg;
+const reflectH = deg => 180 - deg;
 
 // # Setup Functions
 
@@ -161,6 +168,7 @@ class Bullet extends PIXI.AnimatedSprite {
   constructor(element, level) {
     super(loadTextureArray(`resources/bullet/${element}`, 6));
     this.play();
+    this.bounces = 0;
     this.isAlive = true;
     this.animationSpeed = BULLET_ANIMATION_SPEED;
     this.level = level;
@@ -171,12 +179,31 @@ class Bullet extends PIXI.AnimatedSprite {
 
   tick(delta) {
     const [dx, dy] = componenets(degToRad(this.angle) + Math.PI);
+
     this.x += dx * delta * BULLET_SPEED[this.level];
     this.y += dy * delta * BULLET_SPEED[this.level];
+
+    // try to bounce
+    if ((this.element === Element.red)
+      && (this.level === 3)
+      && (this.bounces <= BULLET_MAX_BOUNCE)
+    ) {
+      if (this.x <= 0 || this.x >= FRAME_WIDTH) {
+        this.bounces += 1;
+        this.angle = reflectV(this.angle);
+      } else if (this.y <= 0 || this.y >= FRAME_HEIGHT) {
+        this.bounces += 1;
+        this.angle = reflectH(this.angle);
+      }
+
+      this.x = clamp(1, this.x, FRAME_WIDTH - 1);
+      this.y = clamp(1, this.y, FRAME_HEIGHT - 1);
+    }
   }
 
   get zIndex() {
-    return zIndex.bullet;
+    const bonus = (this.element === Element.blue ? 1 : 0);
+    return zIndex.bullet + bonus;
   }
 
   get collisionRadius() {
@@ -185,9 +212,10 @@ class Bullet extends PIXI.AnimatedSprite {
 
   die() {
     // red bullets don't die.
-    if (this.element === Element.red) {
+    if (this.element === Element.red && this.level >= 2) {
       return;
     }
+
     this.isAlive = false;
     this.visible = false;
   }
@@ -229,7 +257,7 @@ class Enemy extends PIXI.AnimatedSprite {
   tick(delta, state) {
     if (this.isAlive) {
       this.move(delta, state.player);
-      this.collisionCheck(state.bullets);
+      this.collisionCheck(state);
       this.face(state.player.x, state.player.y);
       this.blink(delta);
     }
@@ -258,7 +286,6 @@ class Enemy extends PIXI.AnimatedSprite {
       fearFactor *= ENEMY_COURAGE_BOOST;
     }
 
-
     this.x += dx * delta * ENEMY_BASE_SPEED[this.level] * fearFactor;
     this.y += dy * delta * ENEMY_BASE_SPEED[this.level] * fearFactor;
   }
@@ -280,22 +307,26 @@ class Enemy extends PIXI.AnimatedSprite {
     return this.hp > 0;
   }
 
-  collisionCheck(bullets) {
+  collisionCheck(state) {
     // corpses don't absorb bullets
     if (this.isAlive) {
-      bullets.forEach((bullet) => {
+      state.bullets.forEach((bullet) => {
         if (collide(this, bullet)) {
-          this.takeDamage();
-          bullet.die(bullet.element);
+          this.takeDamage(bullet, state);
+          bullet.die();
         }
       });
     }
   }
 
-  takeDamage() {
+  takeDamage(bullet, state) {
     this.hp -= 1;
     if (!this.isAlive) {
-      this.die();
+      this.die(bullet.element);
+      const shouldExplode = (bullet.element === Element.blue) && (bullet.level === 3);
+      if (shouldExplode) {
+        state.addBulletBurst(this.x, this.y, this.angle, this.element, bullet.level);
+      }
     }
     this.blinks = ENEMY_BLINKS;
     this.blinkTimer = ENEMY_BLINK_DURATION;
@@ -350,12 +381,12 @@ class Player extends PIXI.AnimatedSprite {
 
     this.warningPlayed = false;
 
-    this.animationSpeed = PLAYER_ANIMATION_SPEED;
-    this.lastBulletFired = -PLAYER_COOLDOWN;
-    this.turretTime = PLAYER_TURRET_TIME;
-
     this.element = Element.green;
     this.level = 1;
+
+    this.animationSpeed = PLAYER_ANIMATION_SPEED;
+    this.turretTime = PLAYER_TURRET_TIME;
+    this.lastBulletFired = -PLAYER_COOLDOWN[Element.green][0];
 
     this.textureArrays = {
       enginesOff,
@@ -400,6 +431,9 @@ class Player extends PIXI.AnimatedSprite {
     this.angle = angle;
   }
 
+  get cooldown() {
+    return PLAYER_COOLDOWN[this.element][this.level];
+  }
 
   tick(delta, state) {
     if (this.mode === Mode.ship) {
@@ -418,13 +452,24 @@ class Player extends PIXI.AnimatedSprite {
       this.intoShip();
     }
 
-    if (this.shouldShoot && (this.lastBulletFired + PLAYER_COOLDOWN < state.time)) {
-      this.lastBulletFired = state.time;
-      this.shouldShoot = false;
-      state.addBullet(this.x, this.y, this.angle, this.element, this.level);
+    if (this.shouldShoot && (this.lastBulletFired + this.cooldown < state.time)) {
+      this.shoot(state);
     }
 
     this.collisionCheck(state.enemies, state.time);
+  }
+
+  shoot(state) {
+    this.lastBulletFired = state.time;
+    this.shouldShoot = false;
+
+    if (this.element === Element.blue && this.level >= 2) {
+      state.addBulletBurst(this.x, this.y, this.angle, this.element, this.level);
+    } else if (this.element === Element.green && this.level === 3) {
+      state.addTripleShot(this.x, this.y, this.angle, this.element, this.level);
+    } else {
+      state.addBullet(this.x, this.y, this.angle, this.element, this.level);
+    }
   }
 
   // cheat code!
@@ -522,7 +567,7 @@ class Player extends PIXI.AnimatedSprite {
   collisionCheck(enemies) {
     enemies.forEach((enemy) => {
       if (collide(this, enemy) && enemy.isAlive) {
-        // This invalidates our iteration...
+        // This kind of invalidates our iteration...
         this.shockwave(enemies);
 
         if (this.mode === Mode.ship) {
@@ -630,7 +675,7 @@ class Spawner {
     }
   }
 
-  static randElement() {
+  static pickElement() {
     switch (randInt(3)) {
       case 1: return Element.red;
       case 2: return Element.blue;
@@ -638,7 +683,7 @@ class Spawner {
     }
   }
 
-  static randLevel() {
+  static pickLevel() {
     return randInt(3) + 1;
   }
 
@@ -646,6 +691,8 @@ class Spawner {
     // A random coord in the arena that isn't where the player or an enemy or
     // bullet is near.
     let attempts = 0;
+
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       const x = randInt(state.arena.width);
       const y = randInt(state.arena.height);
@@ -677,8 +724,8 @@ class Spawner {
       return;
     }
 
-    const element = Spawner.randElement(state.time);
-    const level = Spawner.randLevel(state.time);
+    const element = Spawner.pickElement(state.time);
+    const level = Spawner.pickLevel(state.time);
     const [x, y] = Spawner.safeSpace(state);
 
     state.addEnemy(x, y, element, level);
@@ -819,8 +866,20 @@ class State {
     bullet.x = x;
     bullet.y = y;
     bullet.angle = angle;
-    this.arena.addChild(bullet);
     this.bullets.push(bullet);
+    this.arena.addChild(bullet);
+  }
+
+  addBulletBurst(x, y, sourceAngle, element, level) {
+    for (let angle = 0; angle < 360; angle += (360 / BULLET_BURST_COUNT)) {
+      this.addBullet(x, y, sourceAngle + angle, element, level);
+    }
+  }
+
+  addTripleShot(x, y, angle, element, level) {
+    this.addBullet(x, y, angle, element, level);
+    this.addBullet(x, y, angle + BULLET_TRIPLE_SHIFT, element, level);
+    this.addBullet(x, y, angle - BULLET_TRIPLE_SHIFT, element, level);
   }
 
   addEnemy(x, y, element, level) {
