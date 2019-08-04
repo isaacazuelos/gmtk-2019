@@ -1,42 +1,74 @@
-/* eslint-disable no-case-declarations */
 // A game for the GMTK Game Jam 2019
 //
 // https://itch.io/jam/gmtk-2019
 
 // the code is bad, don't worry about it
+/* eslint-disable no-constant-condition */
+/* eslint-disable no-continue */
+/* eslint-disable class-methods-use-this */
+/* eslint-disable no-undef */
+/* eslint-disable no-case-declarations */
 
 // # Constants
 
 const {
   Application,
-  Loader,
   Texture,
 } = PIXI; // eslint-disable-line no-undef
 
-const color = {
-  black: 0x000000,
-  white: 0xFFFFFF,
-  red: 0xFF0000,
-};
-
-// / 16:9 ish version of NES vertical resolution
+// 16:9 ish version of NES vertical resolution
 const FRAME_WIDTH = 427;
 const FRAME_HEIGHT = 240;
 
+const PLAYER_ANIMATION_SPEED = 0.5;
+const PLAYER_DEATH_ANIMATION_SPEED = 0.1;
 const PLAYER_THRUST = 1;
 const PLAYER_MAX_MOVEMENT_SPEED = 2;
 const PLAYER_FRICTION = 0.1;
 const PLAYER_RADIUS = 7;
-
-const PLAYER_INTO_SHIP_ALARM_LENGTH = 3.12;
-const PLAYER_TRANSFORM_LENGTH = 1;
+const PLAYER_SHOCKWAVE_RADIUS = 16;
+const PLAYER_TURRET_TIME = 200;
 const PLAYER_COOLDOWN = 10;
+// const PLAYER_INTO_SHIP_ALARM_LENGTH = 3.12;
+// const PLAYER_TRANSFORM_LENGTH = 1;
 
 const ENEMY_ANIMATION_SPEED = 0.1;
 const ENEMY_RADIUS = [0, 6, 7, 8];
-const ENEMY_BASE_SPEED = [0, 1, 2, 3];
+const ENEMY_BASE_SPEED = [0, 0.75, 0.5, 0.3];
+const ENEMY_BLINKS = 4; // must be even
+const ENEMY_BLINK_DURATION = 5;
 
-const BULLET_SPEED = [0, 1, 2, 3];
+const BULLET_SPEED = [0, 1.5, 2, 2.5];
+const BULLET_ANIMATION_SPEED = 0.25;
+
+const SPAWNER_COOLDOWN = 100;
+const SPAWNER_COOLDOWN_DELTA = 0.90;
+const SPAWNER_COOLDOWN_MIN = 20;
+const SPAWNER_SAFE_DISTANCE = 64;
+const SPAWNER_MAX_ATTEMPTS = 32;
+const SPAWNER_COUNT_RATE = 20000;
+
+const zIndex = {
+  player: 100,
+  enemy: 10,
+  bullet: 5,
+  corpse: 0,
+};
+
+const Element = {
+  green: 'green',
+  red: 'red',
+  blue: 'blue',
+};
+
+const Mode = {
+  turret: 'turret',
+  ship: 'ship',
+  intoTurret: 'intoTurret',
+  intoShip: 'intoShip',
+  dying: 'dying',
+  dead: 'dead',
+};
 
 // # Utility functions
 
@@ -44,6 +76,8 @@ const clamp = (smallest, number, largest) => Math.min(largest, Math.max(smallest
 
 const radToDeg = r => r / (2 * Math.PI) * 360;
 const degToRad = d => (d / 360) * (2 * Math.PI);
+
+const randInt = max => Math.floor(Math.random() * Math.floor(max));
 
 const distance = (x1, y1, x2, y2) => {
   const x = (x1 - x2) * (x1 - x2);
@@ -64,6 +98,7 @@ const componenets = (theta) => {
   return [dx, dy];
 };
 
+
 // # Setup Functions
 
 let app;
@@ -76,34 +111,32 @@ const createApp = () => {
     resolution: 2,
   });
 
-  newApp.renderer.backgroundColor = color.red;
   PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST;
 
   newApp.stop();
   return newApp;
 };
 
+const Sound = {
+  blue_1: PIXI.sound.Sound.from('resources/sounds/blue-1.mp3'),
+  blue_2: PIXI.sound.Sound.from('resources/sounds/blue-2.mp3'),
+  blue_3: PIXI.sound.Sound.from('resources/sounds/blue-3.mp3'),
+  green_1: PIXI.sound.Sound.from('resources/sounds/green-1.mp3'),
+  green_2: PIXI.sound.Sound.from('resources/sounds/green-2.mp3'),
+  green_3: PIXI.sound.Sound.from('resources/sounds/green-3.mp3'),
+  red_1: PIXI.sound.Sound.from('resources/sounds/red-1.mp3'),
+  red_2: PIXI.sound.Sound.from('resources/sounds/red-2.mp3'),
+  red_3: PIXI.sound.Sound.from('resources/sounds/red-3.mp3'),
+  dead_1_1: PIXI.sound.Sound.from('resources/sounds/dead-1-1.mp3'),
+  dead_1_2: PIXI.sound.Sound.from('resources/sounds/dead-1-2.mp3'),
+  dead_1_3: PIXI.sound.Sound.from('resources/sounds/dead-1-3.mp3'),
+  intoShip: PIXI.sound.Sound.from('resources/sounds/intoShip.mp3'),
+  intoTurret: PIXI.sound.Sound.from('resources/sounds/intoTurret.mp3'),
+};
+
 const load = (onCompletion) => {
-  Loader.shared
-    .add([
-      './resources/player/ship/frame1.png',
-      './resources/player/ship/stopped.png',
-      // green-1
-      './resources/enemy/green-1/dead.png',
-      './resources/enemy/green-1/frame1.png',
-      './resources/enemy/green-1/frame2.png',
-      './resources/enemy/green-2/dead.png',
-      './resources/enemy/green-2/frame1.png',
-      './resources/enemy/green-2/frame2.png',
-      './resources/enemy/green-3/dead.png',
-      './resources/enemy/green-3/frame1.png',
-      './resources/enemy/green-3/frame2.png',
-    ])
-    .on('progress', (loader, resource) => {
-      console.log(`loading: ${resource.url}`);
-      console.log(`progress: ${loader.progress}%`);
-    })
-    .load(onCompletion);
+  // I should really be using the loader as planned, but yolo.
+  onCompletion();
 };
 
 // This isn't efficient, but it works and is easy.
@@ -123,10 +156,14 @@ const loadTextureArray = (dir, frameCount) => {
 
 class Bullet extends PIXI.AnimatedSprite {
   constructor(element, level) {
-    super(loadTextureArray(`resources/bullet/${element}-${level}`, 1));
+    super(loadTextureArray(`resources/bullet/${element}`, 6));
+    this.play();
+    this.isAlive = true;
+    this.animationSpeed = BULLET_ANIMATION_SPEED;
     this.level = level;
     this.element = element;
-    this.anchor.set(0.5);
+    this.anchor.set(0.5, 0);
+    Sound[`${this.element}_${this.level}`].play();
   }
 
   tick(delta) {
@@ -134,22 +171,52 @@ class Bullet extends PIXI.AnimatedSprite {
     this.x += dx * delta * BULLET_SPEED[this.level];
     this.y += dy * delta * BULLET_SPEED[this.level];
   }
+
+  get zIndex() {
+    return zIndex.bullet;
+  }
+
+  get collisionRadius() {
+    return this.texture.width;
+  }
+
+  die() {
+    // red bullets don't die.
+    if (this.element === Element.red) {
+      return;
+    }
+    this.isAlive = false;
+    this.alpha = 0;
+  }
 }
 
 class Enemy extends PIXI.AnimatedSprite {
   constructor(element, level, x, y) {
-    const textureArray = loadTextureArray(`resources/enemy/${element}-${level}`, 2);
+    const textureArrays = {
+      alive: loadTextureArray(`resources/enemy/${element}-${level}`, 2),
+      dead: [Texture.from(`resources/enemy/${element}-${level}/dead.png`)],
+    };
 
-    super(textureArray);
+    super(textureArrays.alive);
     this.play();
+
+    this.blinks = 0;
+
     this.animationSpeed = ENEMY_ANIMATION_SPEED;
+
+    this.textureArrays = textureArrays;
 
     this.anchor.set(0.5);
     this.x = x;
     this.y = y;
 
+    this.element = element;
     this.level = level;
     this.hp = level;
+  }
+
+  get zIndex() {
+    return this.isAlive ? this.level + zIndex.enemy : zIndex.corpse;
   }
 
   get collisionRadius() {
@@ -157,20 +224,12 @@ class Enemy extends PIXI.AnimatedSprite {
   }
 
   tick(delta, state) {
-    this.move(delta, state.player);
-    this.collisionCheck(state.bullets);
-    this.face(state.player.x, state.player.y);
-    this.cleanBullets()
-  }
-
-  cleanBullets() {
-    const inArena = [];
-    this.bullets.forEach((b) => {
-      if (this.arena.contains(b.x, b.y)) {
-        inArena.push(b);
-      }
-    });
-    this.bullets = inArena;
+    if (this.isAlive) {
+      this.move(delta, state.player);
+      this.collisionCheck(state.bullets);
+      this.face(state.player.x, state.player.y);
+      this.blink(delta);
+    }
   }
 
   move(delta, player) {
@@ -194,47 +253,85 @@ class Enemy extends PIXI.AnimatedSprite {
     this.angle = angle;
   }
 
+  get isAlive() {
+    return this.hp > 0;
+  }
+
   collisionCheck(bullets) {
-    bullets.forEach((bullet) => {
-      if (collide(this, bullet)) {
-        // kerblam!
-      }
-    });
+    // corpses don't absorb bullets
+    if (this.isAlive) {
+      bullets.forEach((bullet) => {
+        if (collide(this, bullet)) {
+          this.takeDamage();
+          bullet.die();
+        }
+      });
+    }
+  }
+
+  takeDamage() {
+    this.hp -= 1;
+    if (!this.isAlive) {
+      this.die();
+    }
+    this.blinks = ENEMY_BLINKS;
+    this.blinkTimer = ENEMY_BLINK_DURATION;
+  }
+
+  blink(delta) {
+    if (this.blinks === 0) {
+      return;
+    }
+
+    this.alpha = this.blinks % 2 ? 1 : 0;
+
+    if (this.blinkTimer <= 0) {
+      this.blinks -= 1;
+      this.blinkTimer = ENEMY_BLINK_DURATION;
+    } else {
+      this.blinkTimer -= delta;
+    }
+  }
+
+  die() {
+    this.hp = 0;
+    this.textures = this.textureArrays.dead;
+    this.gotoAndPlay(0);
+    this.loop = false;
+    this.alpha = 1;
+    this.blinks = 0;
+    this.angle = Math.random() * 360;
+    Sound[`dead_1_${randInt(3) + 1}`].play();
   }
 }
-
-const Element = {
-  green: 'green',
-  red: 'red',
-  blue: 'blue',
-};
-
-const Mode = {
-  turret: 'turret',
-  ship: 'ship',
-  intoTurret: 'intoTurret',
-  intoShip: 'intoShip',
-};
 
 class Player extends PIXI.AnimatedSprite {
   constructor() {
     const enginesOff = [Texture.from('resources/player/ship/stopped.png')];
     super(enginesOff);
 
+    this.zIndex = 100;
+
+    this.isAlive = true;
     this.mode = Mode.ship;
     this.collisionRadius = PLAYER_RADIUS;
 
+    this.animationSpeed = PLAYER_ANIMATION_SPEED;
     this.lastBulletFired = -PLAYER_COOLDOWN;
+    this.turretTime = PLAYER_TURRET_TIME;
 
     this.element = Element.green;
-    this.level = null;
+    this.level = 1;
 
     this.textureArrays = {
       enginesOff,
       enginesOn: loadTextureArray('resources/player/ship', 1),
       turrets: {
+        red: [Texture.from('resources/player/turret/red.png')],
         green: [Texture.from('resources/player/turret/green.png')],
+        blue: [Texture.from('resources/player/turret/blue.png')],
       },
+      dead: loadTextureArray('resources/player/dead', 8),
       intoTurret: loadTextureArray('resources/player/transform', 7),
       intoShip: loadTextureArray('resources/player/transform', 7).reverse(),
     };
@@ -277,14 +374,18 @@ class Player extends PIXI.AnimatedSprite {
       this.updateEngineState();
     }
 
-    console.log(this.lastBulletFired + PLAYER_COOLDOWN, state.time);
+    this.turretTime -= delta;
+    if ((this.mode === Mode.turret) && (this.turretTime < 0) && this.isAlive) {
+      this.intoShip();
+    }
+
     if (this.shouldShoot && (this.lastBulletFired + PLAYER_COOLDOWN < state.time)) {
       this.lastBulletFired = state.time;
       this.shouldShoot = false;
       state.addBullet(this.x, this.y, this.angle, this.element, this.level);
     }
 
-    this.collisionCheck(state.enemies);
+    this.collisionCheck(state.enemies, state.time);
   }
 
   // cheat code!
@@ -299,7 +400,11 @@ class Player extends PIXI.AnimatedSprite {
   }
 
   intoTurret(element, level) {
+    console.log('engaging turret mode');
+
     this.mode = Mode.intoTurret;
+    this.gotoAndStop(0);
+    Sound.intoTurret.play();
     this.textures = this.textureArrays.intoTurret;
     this.loop = false;
     this.gotoAndPlay(0);
@@ -311,6 +416,7 @@ class Player extends PIXI.AnimatedSprite {
       this.mode = Mode.turret;
       this.loop = true;
 
+      this.turretTime = PLAYER_TURRET_TIME;
       this.element = element;
       this.level = level;
       this.textures = this.textureArrays.turrets[element];
@@ -318,9 +424,13 @@ class Player extends PIXI.AnimatedSprite {
   }
 
   intoShip() {
+    console.log('Returning to ship mode');
+    this.mode = Mode.intoShip;
     this.textures = this.textureArrays.intoShip;
     this.loop = false;
     this.gotoAndPlay(0);
+
+    Sound.intoShip.play();
     this.onComplete = () => {
       this.mode = Mode.ship;
     };
@@ -371,8 +481,37 @@ class Player extends PIXI.AnimatedSprite {
 
   collisionCheck(enemies) {
     enemies.forEach((enemy) => {
-      if (collide(this, enemy)) {
-        this.intoTurret(enemy);
+      if (collide(this, enemy) && enemy.isAlive) {
+        // This invalidates our iteration...
+        this.shockwave(enemies);
+
+        if (this.mode === Mode.ship) {
+          this.intoTurret(enemy.element, enemy.level);
+          enemy.die();
+        } else if (this.mode === Mode.turret) {
+          this.die();
+        }
+      }
+    });
+  }
+
+  die() {
+    this.isAlive = false;
+    this.textures = this.textureArrays.dead;
+    this.loop = false;
+    this.mode = Mode.dying;
+    this.animationSpeed = PLAYER_DEATH_ANIMATION_SPEED;
+    this.onComplete = () => {
+      this.mode = Mode.dead;
+    };
+    this.gotoAndPlay(0);
+    console.log('YOU DIED!');
+  }
+
+  shockwave(enemies) {
+    enemies.forEach((e) => {
+      if (distance(e.x, e.y, this.x, this.y) <= PLAYER_SHOCKWAVE_RADIUS) {
+        e.die();
       }
     });
   }
@@ -430,12 +569,88 @@ const keyboard = (values) => {
 
 // # Game loop and state
 
+class Spawner {
+  constructor() {
+    this.lastSpawn = -SPAWNER_COOLDOWN;
+    this.cooldown = SPAWNER_COOLDOWN;
+  }
+
+  tick(delta, state) {
+    if (this.lastSpawn + SPAWNER_COOLDOWN < state.time) {
+      this.lastSpawn = state.time;
+      this.cooldown *= SPAWNER_COOLDOWN_DELTA;
+      this.cooldown = Math.max(SPAWNER_COOLDOWN_MIN, this.cooldown);
+
+      const spawnCount = Math.floor(state.time / SPAWNER_COUNT_RATE) + 1;
+
+      for (let i = 0; i < spawnCount; i += 1) {
+        Spawner.spawn(state);
+      }
+    }
+  }
+
+  static randElement() {
+    switch (randInt(3)) {
+      case 1: return Element.red;
+      case 2: return Element.blue;
+      default: return Element.green;
+    }
+  }
+
+  static randLevel() {
+    return randInt(3) + 1;
+  }
+
+  static safeSpace(state) {
+    // A random coord in the arena that isn't where the player or an enemy or
+    // bullet is near.
+    let attempts = 0;
+    while (true) {
+      const x = randInt(state.arena.width);
+      const y = randInt(state.arena.height);
+
+      if (distance(state.player.x, state.player.y, x, y) <= SPAWNER_SAFE_DISTANCE) {
+        continue;
+      }
+
+      if (attempts >= SPAWNER_MAX_ATTEMPTS) {
+        return [x, y];
+      }
+
+      attempts += 1;
+
+      for (let i = 0; i < state.enemies.length; i += 1) {
+        const enemy = state.enemies[i];
+        if (distance(enemy.x, enemy.y, x, y) <= SPAWNER_SAFE_DISTANCE) {
+          continue;
+        }
+      }
+
+      return [x, y];
+    }
+  }
+
+
+  static spawn(state) {
+    if (!state.player.isAlive) {
+      return;
+    }
+
+    const element = Spawner.randElement(state.time);
+    const level = Spawner.randLevel(state.time);
+    const [x, y] = Spawner.safeSpace(state);
+
+    state.addEnemy(x, y, element, level);
+  }
+}
+
 class State {
   constructor() {
     this.time = 0;
 
     const arena = new PIXI.AnimatedSprite(loadTextureArray('resources/arena', 1));
     arena.interactive = true;
+    arena.sortableChildren = true;
     this.arena = arena;
     app.stage.addChild(this.arena);
 
@@ -443,8 +658,9 @@ class State {
     this.player = player;
     arena.addChild(this.player);
 
-    this.enemies = [];
     this.bullets = [];
+    this.enemies = [];
+    this.spawner = new Spawner();
 
     // left arrow key
     const left = keyboard(['ArrowLeft', 'a']);
@@ -468,12 +684,12 @@ class State {
     this.down = down;
 
     // temp for testing
-    const space = keyboard(' ');
-    space.press = player.toggleMode.bind(player);
+    // const space = keyboard(' ');
+    // space.press = player.toggleMode.bind(player);
 
     // bind player to pointer events
     arena.on('pointerdown', player.onPointerDown.bind(player));
-    arena.on('pointermove', player.onPointerMove.bind(player))
+    arena.on('pointermove', player.onPointerMove.bind(player));
   }
 
   // this could have been done better...
@@ -515,6 +731,27 @@ class State {
     this.player.tick(delta, this);
     this.bullets.forEach(b => b.tick(delta));
     this.enemies.forEach(e => e.tick(delta, this));
+    this.spawner.tick(delta, this);
+
+    this.cullDeadSprites();
+  }
+
+  cullDeadSprites() {
+    const stillEnemies = [];
+    this.enemies.forEach((e) => {
+      if (e.isAlive) {
+        stillEnemies.push(e);
+      }
+    });
+    this.enemies = stillEnemies;
+
+    const stillBullets = [];
+    this.bullets.forEach((e) => {
+      if (e.isAlive) {
+        stillBullets.push(e);
+      }
+    });
+    this.bullets = stillBullets;
   }
 
   addBullet(x, y, angle, element, level) {
@@ -524,6 +761,12 @@ class State {
     bullet.angle = angle;
     this.arena.addChild(bullet);
     this.bullets.push(bullet);
+  }
+
+  addEnemy(x, y, element, level) {
+    const enemy = new Enemy(element, level, x, y);
+    this.enemies.push(enemy);
+    this.arena.addChild(enemy);
   }
 }
 
